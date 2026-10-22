@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import * as XLSX from "xlsx";
 
 /* ===================== TIPE ===================== */
 type FileKey = "foto" | "akte" | "skhu" | "ijazah" | "bukti";
@@ -11,6 +12,13 @@ type Student = {
 } & Record<FileKey, string> &
   Record<`${FileKey}Id`, string>;
 type Cfg = { url: string; token: string };
+type ImportRow = {
+  baris: number;
+  nama: string;
+  nisn: string;
+  kelas: string;
+  tahun: string;
+};
 
 const LABEL: Record<FileKey, string> = {
   foto: "Foto Siswa",
@@ -31,7 +39,7 @@ const PAGE = 24;
 
 /* ===== PENGATURAN API: ISI DI SINI ===== */
 const API_URL =
-  "https://script.google.com/macros/s/AKfycbx6QiJiRam4_lDn6fp2JNQ9Ic7waS8nSk3WLYVcRuBU_ILqblb74rA_j1Nw2MQGsDXJ/exec"; // URL Web App Apps Script, contoh: https://script.google.com/macros/s/XXXX/exec
+  "https://script.google.com/macros/s/AKfycbznPVDpS-9flOhZhnZIqgqMcAQwpmLoDTd1s7p4KjNdMptp-AQjqxtCayLqc02umtbO/exec"; // URL Web App Apps Script, contoh: https://script.google.com/macros/s/XXXX/exec
 const API_TOKEN = "123"; // harus sama persis dengan CONFIG.TOKEN di Code.gs
 const CFG: Cfg = { url: API_URL, token: API_TOKEN };
 const fid = (s: Student, k: FileKey) => s[`${k}Id` as `${FileKey}Id`];
@@ -186,6 +194,7 @@ export default function App() {
   const [showAdd, setShowAdd] = useState(false);
   const [editId, setEditId] = useState("");
   const [proc, setProc] = useState("");
+  const [imp, setImp] = useState<ImportRow[] | null>(null);
   const [toast, setToast] = useState<{ text: string; ok: boolean } | null>(
     null
   );
@@ -354,6 +363,130 @@ export default function App() {
     }
   }
 
+  const normHead = (s: string) => s.toUpperCase().replace(/\s+/g, " ").trim();
+  // NISN selalu 10 digit: lengkapi 0 di depan jika Excel membuangnya
+  const fixNisn = (v: string) =>
+    /^\d+$/.test(v) && v.length < 10 ? ("0000000000" + v).slice(-10) : v;
+
+  async function readExcel(f: File) {
+    try {
+      const wb = XLSX.read(await f.arrayBuffer(), { type: "array" });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const raw = XLSX.utils.sheet_to_json<Record<string, unknown>>(ws, {
+        defval: "",
+        raw: false,
+      });
+      const pick = (r: Record<string, unknown>, names: string[]) => {
+        for (const key of Object.keys(r))
+          if (names.indexOf(normHead(key)) >= 0) return String(r[key]).trim();
+        return "";
+      };
+      if (
+        !raw.length ||
+        !Object.keys(raw[0]).some((k) => normHead(k) === "NAMA")
+      ) {
+        setToast({
+          text: "Kolom NAMA tidak ditemukan. Pastikan baris pertama berisi judul kolom.",
+          ok: false,
+        });
+        return;
+      }
+      const list: ImportRow[] = raw
+        .map((r, i) => ({
+          baris: i + 2,
+          nama: pick(r, ["NAMA"]),
+          nisn: fixNisn(pick(r, ["NISN"])),
+          kelas: pick(r, ["KELAS"]),
+          tahun: pick(r, ["TAHUN AJARAN", "TAHUN"]),
+        }))
+        .filter((r) => r.nama);
+      if (!list.length) {
+        setToast({
+          text: "Tidak ada baris data yang bisa diimpor.",
+          ok: false,
+        });
+        return;
+      }
+      setImp(list);
+    } catch (e) {
+      setToast({
+        text: "Gagal membaca file Excel: " + (e as Error).message,
+        ok: false,
+      });
+    }
+  }
+
+  async function doImport() {
+    if (!imp) return;
+    setBusy(true);
+    setProc(`Mengimpor ${imp.length} data siswa...`);
+    try {
+      const j = await post(cfg, { action: "importStudents", rows: imp });
+      const r = j.result as {
+        added: number;
+        skipped: { baris: number; nama: string; alasan: string }[];
+        students: Student[];
+      };
+      setStudents((p) => [...p, ...r.students]);
+      setImp(null);
+      setToast({
+        text:
+          `${r.added} data berhasil diimpor` +
+          (r.skipped.length ? `, ${r.skipped.length} dilewati.` : "."),
+        ok: true,
+      });
+    } catch (e) {
+      setToast({ text: "Gagal impor: " + (e as Error).message, ok: false });
+    } finally {
+      setProc("");
+      setBusy(false);
+    }
+  }
+
+  function downloadTemplate() {
+    // Sheet 1 "DATA": judul kolom + 500 baris kosong berformat Teks
+    // (supaya angka 0 di depan NISN tidak hilang saat diketik)
+    const ws: XLSX.WorkSheet = XLSX.utils.aoa_to_sheet([
+      ["NISN", "NAMA", "KELAS", "TAHUN AJARAN"],
+    ]);
+    for (let r = 1; r <= 500; r++)
+      for (let c = 0; c < 4; c++)
+        ws[XLSX.utils.encode_cell({ r, c })] = { t: "s", v: "", z: "@" };
+    ws["!ref"] = XLSX.utils.encode_range({
+      s: { r: 0, c: 0 },
+      e: { r: 500, c: 3 },
+    });
+    ws["!cols"] = [{ wch: 14 }, { wch: 34 }, { wch: 10 }, { wch: 16 }];
+
+    // Sheet 2 "PETUNJUK": cara pengisian dan contoh
+    const guide = XLSX.utils.aoa_to_sheet([
+      ["PETUNJUK PENGISIAN"],
+      [
+        "1. Isi data di sheet DATA, mulai dari baris ke-2. Jangan ubah judul kolom di baris pertama.",
+      ],
+      [
+        "2. Kolom ID tidak perlu diisi, ID dibuat otomatis oleh aplikasi saat impor.",
+      ],
+      [
+        "3. NISN terdiri dari 10 digit. Kolom sudah berformat Teks agar angka 0 di depan tidak hilang.",
+      ],
+      ["4. NAMA wajib diisi. Baris tanpa nama akan diabaikan."],
+      ["5. Tahun ajaran ditulis seperti 2024-2025."],
+      ["6. NISN yang sudah ada di aplikasi akan dilewati (tidak ditimpa)."],
+      [""],
+      ["CONTOH (jangan disalin ke sheet DATA jika tidak diperlukan):"],
+      ["NISN", "NAMA", "KELAS", "TAHUN AJARAN"],
+      ["0123456789", "BUDI SANTOSO", "6A", "2024-2025"],
+    ]);
+    guide["!cols"] = [{ wch: 18 }, { wch: 28 }, { wch: 10 }, { wch: 16 }];
+
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "DATA");
+    XLSX.utils.book_append_sheet(wb, guide, "PETUNJUK");
+    XLSX.writeFile(wb, "Template_Import_Alumni.xlsx");
+    setToast({ text: "Template Excel berhasil diunduh.", ok: true });
+  }
+
   const kelasList = useMemo(
     () =>
       Array.from(new Set(students.map((s) => s.kelas)))
@@ -377,6 +510,23 @@ export default function App() {
         (["foto", "ijazah", "bukti"] as FileKey[]).some((k) => !fid(s, k)))
   );
   const count = (k: FileKey) => students.filter((s) => fid(s, k)).length;
+
+  const impInfo = useMemo(() => {
+    if (!imp) return null;
+    const seen: Record<string, boolean> = {};
+    students.forEach((s) => {
+      if (s.nisn) seen[s.nisn] = true;
+    });
+    const dup: Record<number, boolean> = {};
+    let skip = 0;
+    imp.forEach((r) => {
+      if (r.nisn && seen[r.nisn]) {
+        dup[r.baris] = true;
+        skip++;
+      } else if (r.nisn) seen[r.nisn] = true;
+    });
+    return { dup, skip, ok: imp.length - skip };
+  }, [imp, students]);
   useEffect(() => setShown(PAGE), [q, kelas, tahun, incomplete]);
   useEffect(() => {
     if (!toast) return;
@@ -460,6 +610,23 @@ export default function App() {
           <button className="btn primary" onClick={openAdd}>
             + Tambah Alumni
           </button>
+          <button className="btn" onClick={downloadTemplate}>
+            Unduh Template
+          </button>
+          <label className="btn">
+            Import Excel
+            <input
+              type="file"
+              hidden
+              disabled={busy}
+              accept=".xlsx,.xls,.csv"
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) void readExcel(f);
+                e.target.value = "";
+              }}
+            />
+          </label>
           <button
             className="btn"
             onClick={() => load(cfg, true)}
@@ -718,6 +885,79 @@ export default function App() {
         </div>
       )}
 
+      {imp && impInfo && (
+        <div className="overlay" onClick={() => !busy && setImp(null)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <button
+              className="close"
+              onClick={() => setImp(null)}
+              aria-label="Tutup"
+            >
+              &times;
+            </button>
+            <h2>Import Data Siswa</h2>
+            <p className="muted">
+              {imp.length} baris terbaca &middot;{" "}
+              <b style={{ color: "#166534" }}>{impInfo.ok} akan diimpor</b>
+              {impInfo.skip > 0 && (
+                <>
+                  {" "}
+                  &middot;{" "}
+                  <b style={{ color: "#991b1b" }}>
+                    {impInfo.skip} dilewati (NISN sudah ada)
+                  </b>
+                </>
+              )}
+              . ID dibuat otomatis.
+            </p>
+            <div className="table-wrap scroll">
+              <table className="tbl static">
+                <thead>
+                  <tr>
+                    <th className="no">No</th>
+                    <th>Nama</th>
+                    <th>NISN</th>
+                    <th>Kelas</th>
+                    <th>Tahun Ajaran</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {imp.map((r, i) => (
+                    <tr
+                      key={r.baris}
+                      className={impInfo.dup[r.baris] ? "dup" : ""}
+                    >
+                      <td className="no">{i + 1}</td>
+                      <td className="nm">{r.nama}</td>
+                      <td>{r.nisn}</td>
+                      <td>{r.kelas}</td>
+                      <td>{r.tahun}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <p style={{ marginTop: 14 }}>
+              <button
+                className="btn primary"
+                onClick={doImport}
+                disabled={busy || impInfo.ok === 0}
+              >
+                Impor {impInfo.ok} Data
+              </button>{" "}
+              <button
+                className="btn"
+                onClick={() => setImp(null)}
+                disabled={busy}
+              >
+                Batal
+              </button>
+            </p>
+          </div>
+        </div>
+      )}
+
       {proc && (
         <div className="proc">
           <div className="proc-box">
@@ -777,6 +1017,11 @@ h1{margin:0;font-size:24px}h2{margin:0 0 8px}h3{margin:8px 0 2px;font-size:14px;
 .finfo{display:flex;flex-direction:column;gap:2px;min-width:0;flex:1}
 .finfo b{font-size:13px}.finfo span{word-break:break-all}
 a.btn{text-decoration:none}
+.tbl.static tbody tr{cursor:default}
+.tbl.static tbody tr:hover{background:none}
+.table-wrap.scroll{max-height:55vh;overflow:auto}
+.tbl.static thead th{position:sticky;top:0;z-index:1}
+.tbl tbody tr.dup{opacity:.45;text-decoration:line-through}
 .proc{position:fixed;inset:0;background:#0007;display:flex;align-items:center;justify-content:center;z-index:30}
 .proc-box{background:#fff;border-radius:14px;padding:24px 32px;text-align:center;box-shadow:0 10px 30px #0004;min-width:220px}
 .proc-box p{margin:12px 0 0;font-size:14px;color:#1c2433}
