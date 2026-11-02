@@ -188,7 +188,7 @@ export default function App() {
   const [q, setQ] = useState("");
   const [kelas, setKelas] = useState("");
   const [tahun, setTahun] = useState("");
-  const [incomplete, setIncomplete] = useState(false);
+  const [missing, setMissing] = useState("");
   const [shown, setShown] = useState(PAGE);
   const [selId, setSelId] = useState("");
   const [showAdd, setShowAdd] = useState(false);
@@ -506,10 +506,12 @@ export default function App() {
       (!kelas || s.kelas === kelas) &&
       (!tahun || s.tahun === tahun) &&
       (!q || `${s.nama} ${s.nisn}`.toLowerCase().includes(q.toLowerCase())) &&
-      (!incomplete ||
-        (["foto", "ijazah", "bukti"] as FileKey[]).some((k) => !fid(s, k)))
+      (!missing ||
+        (missing === "any"
+          ? (["foto", "ijazah", "bukti"] as FileKey[]).some((k) => !fid(s, k))
+          : !fid(s, missing as FileKey)))
   );
-  const count = (k: FileKey) => students.filter((s) => fid(s, k)).length;
+  const count = (k: FileKey) => rows.filter((s) => fid(s, k)).length;
 
   const impInfo = useMemo(() => {
     if (!imp) return null;
@@ -527,7 +529,7 @@ export default function App() {
     });
     return { dup, skip, ok: imp.length - skip };
   }, [imp, students]);
-  useEffect(() => setShown(PAGE), [q, kelas, tahun, incomplete]);
+  useEffect(() => setShown(PAGE), [q, kelas, tahun, missing]);
   useEffect(() => {
     if (!toast) return;
     const t = setTimeout(() => setToast(null), 3500);
@@ -559,6 +561,11 @@ export default function App() {
   function renderDoc(s: Student, k: FileKey) {
     const id = fid(s, k);
     const isPdf = k === "ijazah" || /\.pdf$/i.test(s[k]);
+    // Berkas yang hanya tampil sebagai tombol (dibuka di Google Drive)
+    const buttonOnly: Partial<Record<FileKey, string>> = {
+      ijazah: "Buka Ijazah di Google Drive",
+      bukti: "Buka Bukti Terima di Google Drive",
+    };
     return (
       <section className="doc" key={k}>
         <div className="doc-h">
@@ -566,14 +573,14 @@ export default function App() {
           {fileInput(s, k, id ? "Ganti" : "Upload")}
         </div>
         {id ? (
-          k === "ijazah" ? (
+          buttonOnly[k] ? (
             <a
               className="btn primary"
               href={`https://drive.google.com/file/d/${id}/view`}
               target="_blank"
               rel="noopener noreferrer"
             >
-              Buka Ijazah di Google Drive
+              {buttonOnly[k]}
             </a>
           ) : (
             <Media
@@ -645,7 +652,7 @@ export default function App() {
 
       <div className="stats">
         <div>
-          <b>{students.length}</b>
+          <b>{rows.length}</b>
           <span>Total alumni</span>
         </div>
         <div>
@@ -680,14 +687,13 @@ export default function App() {
             <option key={t}>{t}</option>
           ))}
         </select>
-        <label className="chk">
-          <input
-            type="checkbox"
-            checked={incomplete}
-            onChange={(e) => setIncomplete(e.target.checked)}
-          />{" "}
-          Berkas belum lengkap
-        </label>
+        <select value={missing} onChange={(e) => setMissing(e.target.value)}>
+          <option value="">Semua status berkas</option>
+          <option value="any">Ada berkas yang belum lengkap</option>
+          <option value="foto">Belum upload Foto</option>
+          <option value="ijazah">Belum upload Ijazah</option>
+          <option value="bukti">Belum upload Bukti Terima</option>
+        </select>
       </div>
       <p className="muted">
         Menampilkan {Math.min(shown, rows.length)} dari {rows.length}
@@ -721,6 +727,7 @@ export default function App() {
                         key={k}
                         className={`chip ${fid(s, k) ? "ok" : "missing"}`}
                       >
+                        {fid(s, k) ? "✓ " : "✗ "}
                         {k === "foto"
                           ? "Foto"
                           : k === "ijazah"
@@ -1033,7 +1040,9 @@ a.btn{text-decoration:none}
 @keyframes toast-in{from{opacity:0;transform:translate(-50%,-12px)}to{opacity:1;transform:translate(-50%,0)}}
 .ph{display:flex;align-items:center;justify-content:center;color:#7b8aa5;font-weight:700;font-size:14px;background:#e5eaf3}
 .chips{display:flex;gap:4px;flex-wrap:wrap;margin-top:8px}.chip{font-size:11px;padding:2px 8px;border-radius:99px}
-.chip.ok{background:#dcfce7;color:#166534}.chip.missing{background:#fee2e2;color:#991b1b}
+.chip{font-weight:600;border:1px solid transparent}
+.chip.ok{background:#16a34a;color:#fff;border-color:#15803d}
+.chip.missing{background:#fff;color:#dc2626;border:1px dashed #dc2626}
 .overlay{position:fixed;inset:0;background:#0008;display:flex;align-items:flex-start;justify-content:center;padding:24px 12px;overflow:auto;z-index:10}
 .modal{position:relative;background:#fff;border-radius:14px;padding:22px;width:100%;max-width:820px}.modal.small{max-width:520px}
 .close{position:absolute;top:10px;right:14px;border:0;background:none;font-size:28px;cursor:pointer;color:#6b7587}
